@@ -1,11 +1,12 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { DATAPLANE_URL, getDataplaneHeaders } from "@/lib/hindsight-client";
 
 export async function GET(
-  request: Request,
+  request: NextRequest,
   { params }: { params: Promise<{ bankId: string; modelId: string }> }
 ) {
   try {
+    const tenant = request.nextUrl.searchParams.get("tenant");
     const { bankId, modelId } = await params;
 
     if (!bankId || !modelId) {
@@ -14,7 +15,7 @@ export async function GET(
 
     const response = await fetch(
       `${DATAPLANE_URL}/v1/default/banks/${bankId}/memories/${modelId}`,
-      { method: "GET", headers: getDataplaneHeaders() }
+      { method: "GET", headers: getDataplaneHeaders(tenant) }
     );
 
     if (!response.ok) {
