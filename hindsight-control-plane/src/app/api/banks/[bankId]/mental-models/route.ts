@@ -1,8 +1,9 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { DATAPLANE_URL, getDataplaneHeaders } from "@/lib/hindsight-client";
 
-export async function GET(request: Request, { params }: { params: Promise<{ bankId: string }> }) {
+export async function GET(request: NextRequest, { params }: { params: Promise<{ bankId: string }> }) {
   try {
+    const tenant = request.nextUrl.searchParams.get("tenant");
     const { bankId } = await params;
     const { searchParams } = new URL(request.url);
     const tags = searchParams.getAll("tags");
@@ -21,7 +22,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ bank
     }
 
     const url = `${DATAPLANE_URL}/v1/default/banks/${bankId}/mental-models${queryParams.toString() ? `?${queryParams}` : ""}`;
-    const response = await fetch(url, { method: "GET", headers: getDataplaneHeaders() });
+    const response = await fetch(url, { method: "GET", headers: getDataplaneHeaders(tenant) });
 
     if (!response.ok) {
       const errorText = await response.text();
@@ -40,8 +41,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ bank
   }
 }
 
-export async function POST(request: Request, { params }: { params: Promise<{ bankId: string }> }) {
+export async function POST(request: NextRequest, { params }: { params: Promise<{ bankId: string }> }) {
   try {
+    const tenant = request.nextUrl.searchParams.get("tenant");
     const { bankId } = await params;
 
     if (!bankId) {
@@ -52,7 +54,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ ban
 
     const response = await fetch(`${DATAPLANE_URL}/v1/default/banks/${bankId}/mental-models`, {
       method: "POST",
-      headers: getDataplaneHeaders({ "Content-Type": "application/json" }),
+      headers: getDataplaneHeaders(tenant, { "Content-Type": "application/json" }),
       body: JSON.stringify(body),
     });
 

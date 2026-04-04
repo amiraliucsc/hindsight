@@ -112,9 +112,27 @@ export interface BankTemplateImportResponse {
 }
 
 export class ControlPlaneClient {
+  private _tenant: string | null = null;
+
+  /** Set the current tenant. Pass null to clear. */
+  setTenant(tenant: string | null) {
+    this._tenant = tenant;
+  }
+
+  get tenant(): string | null {
+    return this._tenant;
+  }
+
   private async fetchApi<T>(path: string, options?: RequestInit): Promise<T> {
+    // Append ?tenant=<name> to the path if set
+    let url = path;
+    if (this._tenant) {
+      const separator = path.includes("?") ? "&" : "?";
+      url = `${path}${separator}tenant=${encodeURIComponent(this._tenant)}`;
+    }
+
     try {
-      const response = await fetch(path, {
+      const response = await fetch(url, {
         ...options,
         headers: {
           "Content-Type": "application/json",
@@ -973,6 +991,14 @@ export class ControlPlaneClient {
   }
 
   /**
+   * List configured tenants
+   */
+  async listTenants() {
+    const response = await fetch("/api/tenants", { cache: "no-store" });
+    return response.json() as Promise<{ tenants: string[]; multi_tenant: boolean }>;
+  }
+
+  /**
    * Get API version and feature flags
    * Use this to check which capabilities are available in the dataplane
    */
@@ -1025,8 +1051,12 @@ export class ControlPlaneClient {
 
     formData.append("request", JSON.stringify(requestData));
 
-    // Use fetch directly for multipart/form-data
-    const response = await fetch(`/api/files/retain`, {
+    // Use fetch directly for multipart/form-data (can't use fetchApi for FormData)
+    let url = `/api/files/retain`;
+    if (this._tenant) {
+      url += `?tenant=${encodeURIComponent(this._tenant)}`;
+    }
+    const response = await fetch(url, {
       method: "POST",
       body: formData,
       // Don't set Content-Type - browser will set it with boundary
