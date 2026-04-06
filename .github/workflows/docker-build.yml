@@ -1,0 +1,79 @@
+name: Build Docker Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag (e.g. 0.4.22-mt)"
+        required: true
+        default: "0.4.22-mt"
+      target:
+        description: "Dockerfile target stage"
+        required: true
+        default: "standalone"
+        type: choice
+        options:
+          - standalone
+          - api-only
+          - cp-only
+      slim:
+        description: "Slim build (no local ML models)"
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Free Disk Space
+      uses: jlumbroso/free-disk-space@main
+      with:
+        tool-cache: true
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: true
+        docker-images: true
+        swap-storage: true
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v4
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Determine image name
+      id: image
+      run: |
+        case "${{ inputs.target }}" in
+          api-only) echo "name=hindsight-api" >> $GITHUB_OUTPUT ;;
+          cp-only)  echo "name=hindsight-control-plane" >> $GITHUB_OUTPUT ;;
+          *)        echo "name=hindsight" >> $GITHUB_OUTPUT ;;
+        esac
+
+    - name: Build and push
+      uses: docker/build-push-action@v7
+      with:
+        context: .
+        file: docker/standalone/Dockerfile
+        target: ${{ inputs.target }}
+        build-args: |
+          INCLUDE_LOCAL_MODELS=${{ inputs.slim == true && 'false' || 'true' }}
+          PRELOAD_ML_MODELS=${{ inputs.slim == true && 'false' || 'true' }}
+        push: true
+        platforms: linux/amd64,linux/arm64
+        tags: ghcr.io/${{ github.repository_owner }}/${{ steps.image.outputs.name }}:${{ inputs.tag }}
