@@ -73,9 +73,18 @@ async def insert_facts_batch(
         fact_texts.append(_sanitize_text(fact.fact_text))
         # Convert embedding to string for asyncpg vector type
         embeddings.append(str(fact.embedding))
-        # event_date: Use occurred_start if available, otherwise use mentioned_at
-        # This maintains backward compatibility while handling None occurred_start
-        event_dates.append(fact.occurred_start if fact.occurred_start is not None else fact.mentioned_at)
+        # event_date precedence: key_date (LLM-confirmed single canonical date)
+        # → occurred_start → mentioned_at. key_date wins because the LLM
+        # explicitly opted into "this is THE date this event happens on,"
+        # while occurred_start may be derived from a fact_text inference
+        # (see _infer_temporal_date) that doesn't carry the same discipline.
+        if fact.key_date is not None:
+            # key_date is a date; persist as midnight in the timestamp column.
+            event_dates.append(datetime.combine(fact.key_date, datetime.min.time()))
+        elif fact.occurred_start is not None:
+            event_dates.append(fact.occurred_start)
+        else:
+            event_dates.append(fact.mentioned_at)
         occurred_starts.append(fact.occurred_start)
         occurred_ends.append(fact.occurred_end)
         mentioned_ats.append(fact.mentioned_at)
@@ -85,8 +94,16 @@ async def insert_facts_batch(
         chunk_ids.append(fact.chunk_id)
         # Use per-fact document_id if available, otherwise fallback to batch-level document_id
         document_ids.append(fact.document_id if fact.document_id else document_id)
+        # Tags. Append `key_date:YYYY-MM-DD` when set so downstream consumers
+        # (LifeOS dates source) can filter via `tag:key_date:*`. Dedup against
+        # any operator-supplied tag with the same key.
+        fact_tags = list(fact.tags) if fact.tags else []
+        if fact.key_date is not None:
+            kd_tag = f"key_date:{fact.key_date.isoformat()}"
+            if kd_tag not in fact_tags:
+                fact_tags.append(kd_tag)
         # Convert tags to JSON string for proper batch insertion (PostgreSQL unnest doesn't handle 2D arrays well)
-        tags_list.append(json.dumps(fact.tags if fact.tags else []))
+        tags_list.append(json.dumps(fact_tags))
         # observation_scopes: stored as JSONB (string or 2D array), None if not provided
         observation_scopes_list.append(
             json.dumps(fact.observation_scopes) if fact.observation_scopes is not None else None

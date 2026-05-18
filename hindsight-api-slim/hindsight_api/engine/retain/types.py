@@ -6,7 +6,7 @@ from content input to fact storage.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal, TypedDict
 from uuid import UUID
 
@@ -115,6 +115,10 @@ class ExtractedFact:
     entities: list[str] = field(default_factory=list)
     occurred_start: datetime | None = None
     occurred_end: datetime | None = None
+    # Single canonical event date (no time component) — set by the LLM only
+    # when the fact describes one specific event with one clear date. See
+    # fact_extraction.py's TEMPORAL HANDLING prompt section.
+    key_date: date | None = None
     where: str | None = None  # WHERE the fact occurred or is about
     causal_relations: list[CausalRelation] = field(default_factory=list)
 
@@ -154,6 +158,11 @@ class ProcessedFact:
 
     # Location data
     where: str | None = None
+
+    # Canonical event date (LLM-confirmed single-event). Propagated from
+    # ExtractedFact. fact_storage uses it to override event_date when set,
+    # and emits a key_date:YYYY-MM-DD tag for downstream filtering.
+    key_date: date | None = None
 
     # Entities
     entities: list[EntityRef] = field(default_factory=list)
@@ -214,6 +223,7 @@ class ProcessedFact:
             occurred_start=occurred_start,
             occurred_end=occurred_end,
             mentioned_at=mentioned_at,
+            key_date=extracted_fact.key_date,
             context=extracted_fact.context,
             metadata=extracted_fact.metadata,
             entities=entities,
