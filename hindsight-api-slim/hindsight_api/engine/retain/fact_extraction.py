@@ -9,7 +9,7 @@ import asyncio
 import json
 import logging
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, create_model, field_validator
@@ -92,6 +92,12 @@ class Fact(BaseModel):
     # Optional temporal fields
     occurred_start: str | None = None
     occurred_end: str | None = None
+    # Single canonical event date (YYYY-MM-DD). Set ONLY when the fact describes
+    # one specific event with one clear date. Refusal on ambiguity (multi-event
+    # memories, recurring events, vague dates) — leave null and the pipeline
+    # falls back to occurred_start. See the TEMPORAL HANDLING section of the
+    # fact-extraction system prompt.
+    key_date: str | None = None
 
     # Optional location field
     where: str | None = Field(
@@ -159,6 +165,14 @@ class ExtractedFact(BaseModel):
     fact_kind: str = Field(default="conversation", description="'event' or 'conversation'")
     occurred_start: str | None = Field(default=None, description="ISO timestamp for events")
     occurred_end: str | None = Field(default=None, description="ISO timestamp for event end")
+    key_date: str | None = Field(
+        default=None,
+        description=(
+            "Single canonical event date (YYYY-MM-DD) ONLY when the fact describes one specific event "
+            "with one clear date. Leave null for conversation facts, multi-event memories, date ranges, "
+            "recurring events, or genuinely ambiguous dates. See TEMPORAL HANDLING in the system prompt."
+        ),
+    )
     fact_type: Literal["world", "assistant"] = Field(
         description="'world' = objective/external facts. 'assistant' = first-person actions, experiences, or observations by the speaker."
     )
@@ -261,6 +275,14 @@ class ExtractedFactVerbose(BaseModel):
         default=None,
         description="WHEN the event ended (ISO timestamp). Only for events with duration. Leave null for conversations.",
     )
+    key_date: str | None = Field(
+        default=None,
+        description=(
+            "Single canonical event date (YYYY-MM-DD) ONLY when the fact describes one specific event "
+            "with one clear date. Leave null for conversation facts, multi-event memories, date ranges, "
+            "recurring events, or genuinely ambiguous dates. See TEMPORAL HANDLING in the system prompt."
+        ),
+    )
 
     fact_type: Literal["world", "assistant"] = Field(
         description="'world' = objective/external facts about other people, events, general knowledge. 'assistant' = first-person actions, experiences, or observations by the speaker (e.g., 'I changed X', 'I discovered Y')."
@@ -312,6 +334,14 @@ class ExtractedFactNoCausal(BaseModel):
     )
     occurred_start: str | None = Field(default=None, description="WHEN the event happened (ISO timestamp).")
     occurred_end: str | None = Field(default=None, description="WHEN the event ended (ISO timestamp).")
+    key_date: str | None = Field(
+        default=None,
+        description=(
+            "Single canonical event date (YYYY-MM-DD) ONLY when the fact describes one specific event "
+            "with one clear date. Leave null for conversation facts, multi-event memories, date ranges, "
+            "recurring events, or genuinely ambiguous dates. See TEMPORAL HANDLING in the system prompt."
+        ),
+    )
     fact_type: Literal["world", "assistant"] = Field(
         description="'world' = about the user/others. 'assistant' = experience with assistant."
     )
@@ -354,6 +384,14 @@ class VerbatimExtractedFact(BaseModel):
     fact_kind: str = Field(default="conversation", description="'event' or 'conversation'")
     occurred_start: str | None = Field(default=None, description="ISO timestamp for events")
     occurred_end: str | None = Field(default=None, description="ISO timestamp for event end")
+    key_date: str | None = Field(
+        default=None,
+        description=(
+            "Single canonical event date (YYYY-MM-DD) ONLY when the fact describes one specific event "
+            "with one clear date. Leave null for conversation facts, multi-event memories, date ranges, "
+            "recurring events, or genuinely ambiguous dates. See TEMPORAL HANDLING in the system prompt."
+        ),
+    )
     fact_type: Literal["world", "assistant"] = Field(
         description="'world' = objective/external facts. 'assistant' = first-person actions, experiences, or observations by the speaker."
     )
@@ -516,6 +554,15 @@ Use "Event Date" from input as reference for relative dates.
   "last night", "this morning", "today", "tonight" → convert to the resolved absolute date
 - For events: set occurred_start AND occurred_end (same for point events)
 - For conversation facts: NO occurred dates
+- key_date (CRITICAL — single canonical event date in YYYY-MM-DD format):
+  * Set key_date ONLY when the fact describes ONE specific event with ONE clear date.
+  * Leave key_date as null when:
+    - The fact is conversation-type (ongoing state, preference, trait).
+    - The fact text references multiple distinct events with different dates — SPLIT into separate facts instead, each with its own key_date.
+    - The fact describes a date range or recurring event (use occurred_start/end; leave key_date null).
+    - The date is genuinely ambiguous ("sometime next week", "around mid-May").
+  * key_date MUST equal the date the event ACTUALLY happens on. Never set it to a "mentioned at" date, a planning-context date, or a tangentially-referenced date.
+  * If you cannot pin one canonical date, leave key_date null — the system falls back to occurred_start. Silence is safer than wrong attribution.
 
 ══════════════════════════════════════════════════════════════════════════
 ENTITIES
@@ -558,15 +605,28 @@ Example 1 - Selective extraction (Event Date: June 10, 2024):
 Input: "Hey! How's it going? Good morning! So I'm planning my wedding - want a small outdoor ceremony. Just got back from Emily's wedding, she married Sarah at a rooftop garden. It was nice weather. I grabbed a coffee on the way."
 
 Output: ONLY 2 facts (skip greetings, weather, coffee):
-1. what="User planning wedding, wants small outdoor ceremony", who="user", why="N/A", entities=["user", "wedding"]
-2. what="Emily married Sarah at rooftop garden", who="Emily (user's friend), Sarah", occurred_start="2024-06-09", entities=["Emily", "Sarah", "wedding"]
+1. what="User planning wedding, wants small outdoor ceremony", who="user", why="N/A", key_date=null, entities=["user", "wedding"]
+2. what="Emily married Sarah at rooftop garden", who="Emily (user's friend), Sarah", occurred_start="2024-06-09", key_date="2024-06-09", entities=["Emily", "Sarah", "wedding"]
+
+(Fact 1: no specific date for the user's plan → key_date null. Fact 2: one event on one date → key_date set.)
 
 Example 2 - Professional context:
 Input: "Alice has 5 years of Kubernetes experience and holds CKA certification. She's been leading the infrastructure team since March. By the way, she prefers dark roast coffee."
 
 Output: ONLY 2 facts (skip coffee preference - too trivial):
-1. what="Alice has 5 years Kubernetes experience, CKA certified", who="Alice", entities=["Alice", "Kubernetes", "CKA"]
-2. what="Alice leads infrastructure team since March", who="Alice", entities=["Alice", "infrastructure"]
+1. what="Alice has 5 years Kubernetes experience, CKA certified", who="Alice", key_date=null, entities=["Alice", "Kubernetes", "CKA"]
+2. what="Alice leads infrastructure team since March", who="Alice", key_date=null, entities=["Alice", "infrastructure"]
+
+(Both facts describe ongoing states, not point events → key_date null on both.)
+
+Example 3 - Multi-event memory: SPLIT, do not conflate (Event Date: November 24, 2027):
+Input: "Thanksgiving is on Thursday, November 25, 2027, one day after the museum opening on November 24, 2027. I'm thinking about going to the museum opening on November 24."
+
+Output: 2 SEPARATE facts, each with its own key_date:
+1. what="Thanksgiving is Thursday, November 25, 2027", occurred_start="2027-11-25", key_date="2027-11-25", entities=["Thanksgiving"]
+2. what="User considering attending the museum opening on November 24, 2027", occurred_start="2027-11-24", key_date="2027-11-24", entities=["user", "museum opening"]
+
+WRONG — do NOT produce a single conflated fact like "Thanksgiving planning with museum opening around November 24/25" — that conflates two distinct events with different dates and destroys the canonical-date discipline. Each event gets its own fact with its own key_date.
 
 ══════════════════════════════════════════════════════════════════════════
 QUALITY OVER QUANTITY
@@ -702,6 +762,17 @@ For EVENTS (fact_kind="event") - MUST SET BOTH occurred_start AND occurred_end:
 For CONVERSATIONS (fact_kind="conversation"):
 - General info, preferences, ongoing states → NO occurred dates
 - Examples: "loves coffee", "works as engineer"
+
+KEY_DATE (CRITICAL — single canonical event date in YYYY-MM-DD format):
+- Set key_date ONLY when the fact describes ONE specific event with ONE clear date.
+- Leave key_date as null when:
+  * The fact is conversation-type (ongoing state, preference, trait).
+  * The fact text references multiple distinct events with different dates — SPLIT into separate facts instead, each with its own key_date.
+  * The fact describes a date range or recurring event (use occurred_start/end; leave key_date null).
+  * The date is genuinely ambiguous ("sometime next week", "around mid-May").
+- key_date MUST equal the date the event ACTUALLY happens on. Never set it to a "mentioned at" date, a planning-context date, or a tangentially-referenced date.
+- If you cannot pin one canonical date, leave key_date null — the system falls back to occurred_start. Silence is safer than wrong attribution.
+- WRONG: produce one fact "Thanksgiving planning with museum opening around November 24/25" → conflates two distinct events. RIGHT: split into "Thanksgiving on November 25" (key_date=2027-11-25) and "Museum opening on November 24" (key_date=2027-11-24).
 
 ══════════════════════════════════════════════════════════════════════════
 FACT TYPE
@@ -1141,6 +1212,14 @@ async def _extract_facts_from_chunk(
                         fact_data["occurred_end"] = occurred_end
                     elif fact_data.get("occurred_start"):
                         fact_data["occurred_end"] = fact_data["occurred_start"]
+
+                # key_date: only set when LLM explicitly provides it. Never inferred.
+                # Refusal on ambiguity is the whole point of this field — downstream
+                # consumers (LifeOS dates source) query by `tag:key_date` and rely on
+                # the LLM's "leave null if not certain" discipline.
+                key_date = get_value("key_date")
+                if key_date:
+                    fact_data["key_date"] = key_date
 
                 # Add entities if present (validate as Entity objects)
                 # LLM sometimes returns strings instead of {"text": "..."} format
@@ -1836,6 +1915,11 @@ async def extract_facts_from_contents_batch_api(
                 elif fact_data.get("occurred_start"):
                     fact_data["occurred_end"] = fact_data["occurred_start"]
 
+            # key_date: see lenient-parse path above. LLM must opt in explicitly.
+            key_date = get_value("key_date")
+            if key_date:
+                fact_data["key_date"] = key_date
+
             # Entities
             entities = get_value("entities")
             validated_entities = []
@@ -1971,6 +2055,7 @@ async def extract_facts_from_contents_batch_api(
                 entities=[e.text for e in (fact_from_llm.entities or [])],
                 occurred_start=_parse_datetime(fact_from_llm.occurred_start) if fact_from_llm.occurred_start else None,
                 occurred_end=_parse_datetime(fact_from_llm.occurred_end) if fact_from_llm.occurred_end else None,
+                key_date=_parse_key_date(fact_from_llm.key_date),
                 causal_relations=_convert_causal_relations(fact_from_llm.causal_relations or [], global_fact_idx),
                 content_index=chunk_meta.content_index,
                 chunk_index=chunk_meta.chunk_index,
@@ -2161,6 +2246,8 @@ async def extract_facts_from_contents(
                         occurred_end=_parse_datetime(fact_from_llm.occurred_end)
                         if fact_from_llm.occurred_end
                         else None,
+                        # key_date: canonical event date; LLM-opt-in only, refusal-on-ambiguity.
+                        key_date=_parse_key_date(fact_from_llm.key_date),
                         causal_relations=_convert_causal_relations(
                             fact_from_llm.causal_relations or [], global_fact_idx
                         ),
@@ -2225,6 +2312,23 @@ def _parse_datetime(date_str: str):
     try:
         return date_parser.isoparse(date_str)
     except Exception:
+        return None
+
+
+def _parse_key_date(key_date_str: str | None) -> date | None:
+    """Parse the LLM's key_date YYYY-MM-DD string into a date.
+
+    Accepts either a bare date (`2026-05-10`) or a full ISO datetime
+    (`2026-05-10T00:00:00`), taking just the date component. Returns
+    None on any parse failure — silence is safer than wrong attribution.
+    """
+    if not key_date_str:
+        return None
+    try:
+        # date.fromisoformat handles bare YYYY-MM-DD; datetime.fromisoformat
+        # handles the datetime form (tolerantly via dateutil if needed).
+        return date.fromisoformat(key_date_str[:10])
+    except (ValueError, TypeError):
         return None
 
 
